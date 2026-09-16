@@ -34,3 +34,16 @@ extension ISO8601DateFormatter {
         return ISO8601DateFormatter().date(from: string)
     }
 }
+
+/// A message to show for an error, or nil when it only means a task was cancelled
+/// (the view that started it went away).
+func message(for error: Error) -> String? {
+    if error is CancellationError { return nil }
+    if let urlError = error as? URLError, urlError.code == .cancelled { return nil }
+    return error.localizedDescription
+}
+
+/// CPU percentage with enough precision to show near-idle load.
+func percent(_ value: Double) -> String {
+    value > 0 && value < 1 ? String(format: "%.2f%%", value) : String(format: "%.1f%%", value)
+}

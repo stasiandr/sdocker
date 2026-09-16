@@ -175,7 +175,7 @@ final class BuildsStore {
             let data = try await Shell.run("docker", ["buildx", "history", "ls", "--format", "json"])
             records = Shell.decodeLines(data)
         } catch {
-            lastError = error.localizedDescription
+            lastError = message(for: error) ?? lastError
         }
     }
 
@@ -192,7 +192,7 @@ final class BuildsStore {
             }
             recordProgress[ref] = progress
         } catch {
-            lastError = error.localizedDescription
+            lastError = message(for: error) ?? lastError
         }
     }
 
@@ -201,7 +201,7 @@ final class BuildsStore {
         do {
             _ = try await Shell.run("docker", ["buildx", "history", "rm"] + refs)
         } catch {
-            lastError = error.localizedDescription
+            lastError = message(for: error) ?? lastError
         }
         sessions.removeAll { $0.ref.map(refs.contains) ?? false && $0.status != .running }
         await refresh()

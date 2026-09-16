@@ -27,23 +27,38 @@ struct DockerAPI: Sendable {
         return collected
     }
 
-    /// Streams a JSON-lines response (pull progress and friends), one decoded object per line.
+    /// Streams a JSON-lines response (pull progress, stats), one line at a time.
+    /// Cancelling the calling task closes the connection.
     func streamLines(_ method: String, _ path: String, onLine: @escaping @Sendable (Data) -> Void) async throws {
         var buffer = Data()
-        var ok = true
-        let status = try await exchange(method, path, body: nil) { chunk in
+        try await stream(method, path) { chunk in
             buffer.append(chunk)
-            guard ok else { return }
             while let nl = buffer.firstIndex(of: UInt8(ascii: "\n")) {
                 let line = buffer[buffer.startIndex..<nl]
                 buffer.removeSubrange(buffer.startIndex...nl)
                 if !line.isEmpty { onLine(Data(line)) }
             }
-        } onStatus: { ok = (200..<300).contains($0) }
-        if !(200..<300).contains(status) {
-            throw Self.error(status: status, body: buffer)
         }
         if !buffer.isEmpty { onLine(buffer) }
+    }
+
+    /// Streams a raw response body; throws on a non-2xx status with the error message.
+    /// Cancelling the calling task closes the connection.
+    func stream(_ method: String, _ path: String, body: Data? = nil, onChunk: @escaping (Data) -> Void) async throws {
+        var ok = true
+        var errorBody = Data()
+        let status = try await exchange(method, path, body: body) { chunk in
+            if ok { onChunk(chunk) } else { errorBody.append(chunk) }
+        } onStatus: { ok = (200..<300).contains($0) }
+        if !(200..<300).contains(status) {
+            throw Self.error(status: status, body: errorBody)
+        }
+    }
+
+    /// Sends a JSON body.
+    @discardableResult
+    func send<Body: Encodable>(_ method: String, _ path: String, json: Body) async throws -> Data {
+        try await send(method, path, body: JSONEncoder().encode(json))
     }
 
     private static func error(status: Int, body: Data) -> DockerAPIError {
@@ -61,28 +76,34 @@ struct DockerAPI: Sendable {
         onStatus: @escaping (Int) -> Void = { _ in }
     ) async throws -> Int {
         let socketPath = socketPath
-        return try await withCheckedThrowingContinuation { cont in
-            Self.queue.async {
-                do {
-                    let status = try Self.blockingExchange(
-                        socketPath: socketPath, method: method, path: path, body: body,
-                        onStatus: onStatus, onBody: onBody
-                    )
-                    cont.resume(returning: status)
-                } catch {
-                    cont.resume(throwing: error)
+        let connection = Connection()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { cont in
+                Self.queue.async {
+                    do {
+                        let status = try Self.blockingExchange(
+                            connection: connection, socketPath: socketPath, method: method, path: path, body: body,
+                            onStatus: onStatus, onBody: onBody
+                        )
+                        cont.resume(returning: status)
+                    } catch {
+                        cont.resume(throwing: connection.isCancelled ? CancellationError() : error)
+                    }
                 }
             }
+        } onCancel: {
+            connection.cancel()
         }
     }
 
     private static func blockingExchange(
-        socketPath: String, method: String, path: String, body: Data?,
+        connection: Connection, socketPath: String, method: String, path: String, body: Data?,
         onStatus: @escaping (Int) -> Void, onBody: @escaping (Data) -> Void
     ) throws -> Int {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
-        defer { close(fd) }
+        guard connection.attach(fd) else { close(fd); throw CancellationError() }
+        defer { connection.detach(); close(fd) }
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
@@ -122,11 +143,38 @@ struct DockerAPI: Sendable {
         while !reader.isDone {
             let n = read(fd, &chunk, chunk.count)
             if n < 0 { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
-            if n == 0 { break }
+            if n == 0 { if connection.isCancelled { throw CancellationError() }; break }
             try reader.feed(Data(chunk[0..<n]))
         }
         guard reader.status > 0 else { throw DockerAPIError(status: 0, message: "Empty response from Docker") }
         return reader.status
+    }
+}
+
+/// The socket of one exchange, so a cancelled task can shut it down and unblock `read`.
+private final class Connection: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fd: Int32 = -1
+    private var cancelled = false
+
+    var isCancelled: Bool { lock.withLock { cancelled } }
+
+    func attach(_ fd: Int32) -> Bool {
+        lock.withLock {
+            self.fd = fd
+            return !cancelled
+        }
+    }
+
+    func detach() {
+        lock.withLock { fd = -1 }
+    }
+
+    func cancel() {
+        lock.withLock {
+            cancelled = true
+            if fd >= 0 { shutdown(fd, SHUT_RDWR) }
+        }
     }
 }
 

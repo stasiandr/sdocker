@@ -140,6 +140,7 @@ struct ImagesView: View {
             if rows.count == 1, let row = rows.first {
                 Button("Copy Reference") { copy(row.reference) }
                 Button("Copy Image ID") { copy(row.imageID) }
+                Button("Run…") { NotificationCenter.default.post(name: .runImage, object: row.reference) }
                 Button("Tag…") { tagging = row }
                 if !row.isDangling {
                     Button("Pull Again") { store.pull(row.reference) }

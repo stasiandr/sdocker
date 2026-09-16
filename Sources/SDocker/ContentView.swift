@@ -2,28 +2,48 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(EngineStore.self) private var engine
+    @Environment(ContainersStore.self) private var containers
     @Environment(ImagesStore.self) private var images
+    @Environment(VolumesStore.self) private var volumes
+    @Environment(NetworksStore.self) private var networks
     @Environment(BuildsStore.self) private var builds
+    @Environment(DiskStore.self) private var disk
     @Binding var section: SidebarItem
     @Binding var newBuild: BuildRequest?
+    @Binding var runPrefill: RunPrefill?
     @State private var buildPath: [BuildItem.ID] = []
+    @State private var containerPath: [Container.ID] = []
 
     var body: some View {
         NavigationSplitView {
             List(selection: Binding(get: { section }, set: { if let s = $0 { section = s } })) {
-                ForEach(SidebarItem.allCases) { item in
-                    Label(item.rawValue, systemImage: item.systemImage)
-                        .badge(item == .builds && builds.runningCount > 0 ? builds.runningCount : 0)
-                        .tag(item)
+                Section("Docker") {
+                    ForEach(SidebarItem.allCases.filter { $0 != .engine }) { item in
+                        Label(item.rawValue, systemImage: item.systemImage)
+                            .badge(badge(for: item))
+                            .tag(item)
+                    }
+                }
+                Section("System") {
+                    Label(SidebarItem.engine.rawValue, systemImage: SidebarItem.engine.systemImage)
+                        .tag(SidebarItem.engine)
                 }
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 260)
-            .safeAreaInset(edge: .bottom) { EngineStatusBar() }
+            .safeAreaInset(edge: .bottom) {
+                EngineStatusBar().onTapGesture { section = .engine }
+            }
         } detail: {
-            if engine.isRunning {
+            if section == .engine {
+                EngineView()
+            } else if engine.isRunning {
                 switch section {
+                case .containers: ContainersView(path: $containerPath, runRequest: $runPrefill)
                 case .images: ImagesView()
+                case .volumes: VolumesView()
+                case .networks: NetworksView()
                 case .builds: BuildsView(path: $buildPath, newBuild: $newBuild)
+                case .engine: EmptyView()
                 }
             } else {
                 EngineUnavailableView()
@@ -35,18 +55,30 @@ struct ContentView: View {
                 buildPath = [session.id.uuidString]
             }
         }
-        .alert(
-            "Something went wrong",
-            isPresented: Binding(
-                get: { images.lastError != nil || builds.lastError != nil },
-                set: { if !$0 { images.lastError = nil; builds.lastError = nil } }
-            ),
-            actions: { Button("OK") {} },
-            message: { Text(images.lastError ?? builds.lastError ?? "") }
-        )
+        .sheet(item: $runPrefill) { prefill in
+            RunSheet(prefill: prefill) { id in
+                section = .containers
+                containerPath = [id]
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .runImage)) { note in
+            runPrefill = RunPrefill(image: note.object as? String ?? "")
+        }
+        .alert("Something went wrong", isPresented: Binding(get: { lastError != nil }, set: { if !$0 { clearErrors() } })) {
+            Button("OK") {}
+        } message: {
+            Text(lastError ?? "")
+        }
         .onChange(of: engine.api?.socketPath, initial: true) {
+            containers.api = engine.api
             images.api = engine.api
-            Task { await images.refresh() }
+            volumes.api = engine.api
+            networks.api = engine.api
+            disk.api = engine.api
+            Task {
+                await containers.refresh()
+                await images.refresh()
+            }
         }
         .onChange(of: section) {
             if section == .images { Task { await images.refresh() } }
@@ -55,6 +87,27 @@ struct ContentView: View {
             // A finished build usually produced an image.
             Task { await images.refresh() }
         }
+    }
+
+    private func badge(for item: SidebarItem) -> Int {
+        switch item {
+        case .containers: containers.runningCount
+        case .builds: builds.runningCount
+        default: 0
+        }
+    }
+
+    private var lastError: String? {
+        containers.lastError ?? images.lastError ?? volumes.lastError ?? networks.lastError ?? builds.lastError ?? disk.lastError
+    }
+
+    private func clearErrors() {
+        containers.lastError = nil
+        images.lastError = nil
+        volumes.lastError = nil
+        networks.lastError = nil
+        builds.lastError = nil
+        disk.lastError = nil
     }
 }
 
@@ -132,7 +185,7 @@ private struct EngineUnavailableView: View {
                 if case .failed(let message) = engine.state {
                     Text(message)
                 } else {
-                    Text("Images and builds live in the Colima virtual machine.")
+                    Text("Containers, images and builds live in the Colima virtual machine.")
                 }
             } actions: {
                 Button("Start Engine", action: engine.start)

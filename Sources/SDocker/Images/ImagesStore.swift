@@ -56,7 +56,7 @@ final class ImagesStore {
                 .flatMap { ImageRow.rows(from: $0, usedImageIDs: used) }
                 .sorted { $0.created > $1.created }
         } catch {
-            lastError = error.localizedDescription
+            lastError = message(for: error) ?? lastError
         }
     }
 
@@ -69,7 +69,7 @@ final class ImagesStore {
             inspected[imageID] = try await inspect
             layers[imageID] = try await history.reversed()
         } catch {
-            lastError = error.localizedDescription
+            lastError = message(for: error) ?? lastError
         }
     }
 
@@ -129,7 +129,7 @@ final class ImagesStore {
                 // Untagging by reference keeps other tags of the same image.
                 try await api.send("DELETE", "/images/\(row.reference.urlEscaped)?force=\(force)")
             } catch {
-                lastError = error.localizedDescription
+                lastError = message(for: error) ?? lastError
             }
         }
         await refresh()
@@ -146,7 +146,7 @@ final class ImagesStore {
         do {
             try await api.send("POST", "/images/\(row.imageID.urlEscaped)/tag?repo=\(repo.urlEscaped)&tag=\(tag.urlEscaped)")
         } catch {
-            lastError = error.localizedDescription
+            lastError = message(for: error) ?? lastError
         }
         await refresh()
     }
@@ -161,7 +161,7 @@ final class ImagesStore {
             await refresh()
             return (try? JSONDecoder().decode(Report.self, from: data))?.SpaceReclaimed ?? 0
         } catch {
-            lastError = error.localizedDescription
+            lastError = message(for: error) ?? lastError
             return 0
         }
     }
