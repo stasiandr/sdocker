@@ -31,3 +31,7 @@ Only Command Line Tools, no Xcode project.
 
 Launch arguments for scripted screenshots: `-section builds`, `-select <repository>`,
 `-open <build ref>`, `-build <folder>`.
+
+## License
+
+Public domain ([Unlicense](LICENSE)).
