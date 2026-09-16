@@ -30,7 +30,7 @@ open build/sdocker.app
 
 Needs `colima`, `docker` and `docker-buildx` from Homebrew (buildx needs
 `"cliPluginsExtraDirs": ["/opt/homebrew/lib/docker/cli-plugins"]` in `~/.docker/config.json`).
-Only Command Line Tools, no Xcode project.
+No Xcode project, but the icon is an Icon Composer document (`Resources/SDocker.icon`) compiled by `actool`, which needs Xcode 26 or later.
 
 ## How it talks to Docker
 
